@@ -518,8 +518,24 @@ function render() {
   if (state.overlay === 'history')  html += viewHistory();
   if (state.overlay === 'confirm')  html += viewConfirm();
 
+  // Every render replaces #dishes, which would reset its scrollTop. Opening a
+  // sheet, opening a dish, and closing either one all go through here, so the
+  // position is carried across instead of being thrown away.
+  const keptScroll = $('#dishes')?.scrollTop ?? null;
+
   app.innerHTML = html;
+
+  const restore = () => {
+    if (keptScroll == null) return;
+    const list = $('#dishes');
+    if (list && list.scrollTop !== keptScroll) list.scrollTop = keptScroll;
+  };
+  // Once before wiring so the scroll spy reads the real position, and again
+  // after, because sizing the tail changes the scroll range.
+  restore();
   wire();
+  restore();
+
   fitRestaurantName();
 }
 
@@ -1372,6 +1388,13 @@ function wireFilterSheet() {
     state.sheet = null;
     state.draft = null;
     render();
+    // A new result set reads from the top; the previous offset is meaningless
+    // against different content.
+    const list = $('#dishes');
+    if (list) list.scrollTop = 0;
+    state.sectionTouched = false;
+    const label = $('#jump-label');
+    if (label) label.textContent = 'Jump to section';
   });
 }
 
@@ -1387,6 +1410,7 @@ function repaintDishes() {
         ? `Nothing on this menu matches "${esc(state.query)}".`
         : 'Nothing on this menu matches those filters.'}</div>` : '') +
     (total > 0 ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : '');
+  list.scrollTop = 0;   // a changed result set reads from the top
   bindDishRows();
   sizeScrollTail();
   bindScrollSpy();
@@ -1432,8 +1456,10 @@ function bindScrollSpy() {
     // Bottomed out: whatever is in view at the end is the last section.
     if (list.scrollTop + list.clientHeight >= list.scrollHeight - 4) current = heads.length - 1;
     state.section = current;
+    // Any scroll counts as having moved. Handled in place, never through
+    // render(): re-rendering mid-gesture rebuilt the list and ate the scroll.
+    if (list.scrollTop > 0) state.sectionTouched = true;
     if (state.sectionTouched) {
-      // Updated in place, never via render(): re-rendering would fight the scroll.
       const label = $('#jump-label');
       const name = heads[current].querySelector('.sec-name')?.textContent;
       if (label && name && label.textContent !== name) label.textContent = name;
@@ -1441,9 +1467,6 @@ function bindScrollSpy() {
   };
 
   list.onscroll = () => {
-    // The first scroll counts as moving, so the label switches from the prompt
-    // to the section you are actually in.
-    if (!state.sectionTouched) { state.sectionTouched = true; render(); return; }
     if (ticking) return;
     ticking = true;
     requestAnimationFrame(update);
