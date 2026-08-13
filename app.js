@@ -427,8 +427,13 @@ const ICON = {
 
 const Camera = {
   stream: null, video: null, track: null,
+  isRunning: false, starting: false,
+  onReady: null,
 
   async start(videoEl) {
+    // Renders are frequent; without this the same stream is requested repeatedly.
+    if (this.isRunning || this.starting) return this.isRunning;
+    this.starting = true;
     this.video = videoEl;
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -444,16 +449,27 @@ const Camera = {
       videoEl.srcObject = this.stream;
       this.track = this.stream.getVideoTracks()[0];
       await videoEl.play().catch(() => {});
+      this.isRunning = true;
+      this.starting = false;
+      this.onReady?.(true);
       return true;
     } catch {
       // Denied, unavailable, or an insecure origin: the file input still works.
+      this.isRunning = false;
+      this.starting = false;
+      this.onReady?.(false);
       return false;
     }
   },
 
   stop() {
-    this.stream?.getTracks().forEach((t) => t.stop());
+    if (!this.stream) { this.isRunning = false; return; }
+    // Stopping every track is what actually releases the hardware and clears the
+    // recording indicator; dropping the element alone leaves it live.
+    this.stream.getTracks().forEach((t) => t.stop());
+    if (this.video) this.video.srcObject = null;
     this.stream = null; this.track = null;
+    this.isRunning = false;
   },
 
   get hasTorch() {
@@ -537,6 +553,20 @@ function render() {
   restore();
 
   fitRestaurantName();
+  syncCamera();
+}
+
+/**
+ * The camera runs only while the viewfinder is actually on screen. Every other
+ * state, reading a menu, waiting on a scan, or anything with a sheet or overlay
+ * over the top, releases it: the indicator should not stay lit and the radio
+ * should not stay powered while nothing is being framed.
+ */
+function syncCamera() {
+  const wanted = state.screen === 'capture' && !state.overlay && !state.sheet && !document.hidden;
+  if (!wanted) { Camera.stop(); return; }
+  const video = $('#cam-video');
+  if (video && !Camera.isRunning) Camera.start(video);
 }
 
 /** The CSS equivalent of minimumScaleFactor: step the wordmark down until a long
@@ -742,29 +772,55 @@ function visibleDishes() {
     `${d.original} ${d.translated} ${d.ingredients} ${d.description}`.toLowerCase().includes(q));
 }
 
-/** Dishes for the continuous list, honouring search and every active filter.
- *  Returns sections so the list can keep its own headings as separators. */
-function visibleSections() {
+/** True when a dish satisfies every active filter. */
+function dishPasses(d) {
+  const { diets, min, max } = state.filters;
+  if (diets.has('veg') && !d.vegetarian) return false;
+  if (diets.has('gf') && !d.glutenFree) return false;
+  // Dishes with no readable price are kept: hiding them would silently drop
+  // items the menu does list.
+  if (d.price != null) {
+    if (min != null && d.price < min) return false;
+    if (max != null && d.price > max) return false;
+  }
+  return true;
+}
+
+/** Search is a query and does hide things; filters are a preference and do not. */
+function searchMatches(d) {
+  if (!state.searching) return true;
+  const q = state.query.trim().toLowerCase();
+  if (!q) return true;
+  return `${d.original} ${d.translated} ${d.ingredients} ${d.description}`.toLowerCase().includes(q);
+}
+
+/**
+ * The menu split into groups for display.
+ *
+ * Filters used to remove dishes outright, which could empty the whole screen
+ * with no hint that a filter was the cause, and no obvious way back. They now
+ * sort instead: what fits rises to the top, everything else stays below, and the
+ * menu is never hidden from the reader.
+ */
+function menuGroups() {
   const m = state.menu;
   if (!m) return [];
-  const q = state.searching ? state.query.trim().toLowerCase() : '';
-  const { diets, min, max } = state.filters;
+  const searched = m.sections
+    .map((s) => ({ ...s, items: s.items.filter(searchMatches) }))
+    .filter((s) => s.items.length > 0);
 
-  return m.sections.map((s) => ({
-    ...s,
-    items: s.items.filter((d) => {
-      if (diets.has('veg') && !d.vegetarian) return false;
-      if (diets.has('gf') && !d.glutenFree) return false;
-      // Dishes with no readable price are kept: hiding them would silently drop
-      // items the menu does list.
-      if (d.price != null) {
-        if (min != null && d.price < min) return false;
-        if (max != null && d.price > max) return false;
-      }
-      if (!q) return true;
-      return `${d.original} ${d.translated} ${d.ingredients} ${d.description}`.toLowerCase().includes(q);
-    }),
-  })).filter((s) => s.items.length > 0);
+  if (!filtersActive()) {
+    return [{ id: 'all', header: null, sections: searched }];
+  }
+
+  const bucket = (keep) => searched
+    .map((s) => ({ ...s, items: s.items.filter((d) => dishPasses(d) === keep) }))
+    .filter((s) => s.items.length > 0);
+
+  return [
+    { id: 'fits', header: 'Fits your filters', sections: bucket(true) },
+    { id: 'rest', header: 'Everything else', sections: bucket(false) },
+  ].filter((g) => g.id === 'fits' || g.sections.length > 0);
 }
 
 /** Diet filters are only offered for badges this menu actually carries. */
@@ -793,11 +849,26 @@ function filtersActive() {
     (b && ((min != null && min > b.lo) || (max != null && max < b.hi)));
 }
 
+/** Everything the jump control can move to, in document order. The scroll spy
+ *  reads the same list, so its label always names a real entry. */
+function jumpTargets() {
+  const groups = menuGroups();
+  const out = [];
+  let n = 0;
+  for (const g of groups) {
+    if (g.header) out.push({ label: g.header, id: `grp-${g.id}` });
+    for (const s of g.sections) {
+      // Sections inside the filtered group are reachable via the group heading.
+      if (!g.header || g.id === 'rest') out.push({ label: s.name, id: `sec-${n}` });
+      n += 1;
+    }
+  }
+  return out;
+}
+
 function viewMenu() {
   const m = state.menu;
   if (!m) return '';
-  const sections = visibleSections();
-  const total = sections.reduce((n, s) => n + s.items.length, 0);
   const canFilter = availableDiets().length > 0 || !!priceBounds();
 
   const tools = state.searching ? `
@@ -810,7 +881,7 @@ function viewMenu() {
     : `
       <div class="menu-tools">
         <button class="jump-btn" id="jump-open">
-          <span id="jump-label">${esc(state.sectionTouched ? (sections[state.section]?.name ?? 'Jump to section') : 'Jump to section')}</span>${ICON.caret()}
+          <span id="jump-label">${esc(state.sectionTouched ? (jumpTargets()[state.section]?.label ?? 'Jump to section') : 'Jump to section')}</span>${ICON.caret()}
         </button>
         ${canFilter ? `<button class="filter-btn ${filtersActive() ? 'on' : ''}" id="filter-open" aria-label="Filters">
           ${ICON.funnel()}
@@ -827,18 +898,44 @@ function viewMenu() {
         ${ICON.search(state.searching ? 'var(--paper)' : 'currentColor')}</button>
     </div>
     ${tools}
-    <div class="dishes" id="dishes">
-      ${sections.map((s, i) => sectionBlock(s, i)).join('')}
-      ${total === 0 ? `<div class="empty">${
-        state.searching && state.query.trim()
-          ? `Nothing on this menu matches "${esc(state.query)}".`
-          : 'Nothing on this menu matches those filters.'}</div>` : ''}
-      ${total > 0 ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : ''}
-    </div>
-    ${state.sheet === 'jump' ? viewJumpSheet(sections) : ''}
+    <div class="dishes" id="dishes">${dishesHTML()}</div>
+    ${state.sheet === 'jump' ? viewJumpSheet() : ''}
     ${state.sheet === 'filter' ? viewFilterSheet() : ''}
     ${state.detailId ? viewDetail() : ''}
   </div>`;
+}
+
+/** The scrolling body: group headings, section headings, and dish rows. */
+function dishesHTML() {
+  const groups = menuGroups();
+  const total = groups.reduce((n, g) => n + g.sections.reduce((k, s) => k + s.items.length, 0), 0);
+  let n = 0;
+  let html = '';
+
+  for (const g of groups) {
+    if (g.header) {
+      html += `<div class="grp-head" id="grp-${g.id}"><div class="grp-title">${esc(g.header)}</div></div>`;
+    }
+    if (g.id === 'fits' && g.sections.length === 0) {
+      // The dead end this replaced: a filter with no matches used to empty the
+      // screen. The rest of the menu is still below.
+      html += `<div class="grp-empty">Nothing on this menu fits your filters.</div>`;
+    }
+    for (const s of g.sections) {
+      html += sectionBlock(s, n);
+      n += 1;
+    }
+  }
+
+  if (total === 0) {
+    html += `<div class="empty">${
+      state.searching && state.query.trim()
+        ? `Nothing on this menu matches "${esc(state.query)}".`
+        : 'Nothing on this menu to show.'}</div>`;
+  } else {
+    html += '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>';
+  }
+  return html;
 }
 
 function sectionBlock(s, i) {
@@ -854,16 +951,18 @@ function sectionBlock(s, i) {
 
 /** Section list as the app's own sheet rather than the OS picker, so it matches
  *  everything else. The section currently on screen is marked. */
-function viewJumpSheet(sections) {
+/** Section list as the app's own sheet rather than the OS picker, so it matches
+ *  everything else. The entry currently on screen is marked. */
+function viewJumpSheet() {
+  const targets = jumpTargets();
   return `<div class="sheet-scrim" id="jump-scrim">
     <div class="sheet" role="dialog" aria-label="Jump to section">
       <div class="grab"></div>
       <div class="sheet-title">Jump to section</div>
       <div class="sheet-list">
-        ${sections.map((s, i) => `
-          <button class="jump-row ${i === state.section ? 'on' : ''}" data-jump="${i}">
-            <span class="n">${esc(s.name)}</span>
-            <span class="c">${s.items.length}</span>
+        ${targets.map((tg, i) => `
+          <button class="jump-row ${i === state.section ? 'on' : ''} ${tg.id.startsWith('grp-') ? 'grp' : ''}" data-jump="${i}">
+            <span class="n">${esc(tg.label)}</span>
           </button>`).join('')}
       </div>
     </div>
@@ -1196,13 +1295,12 @@ function wireOnboard() {
 
 function wireCamera() {
   const video = $('#cam-video');
-  let live = false;
-  Camera.start(video).then((ok) => {
-    live = ok;
-    if (!ok) video.classList.add('hidden');
+  // syncCamera() owns starting and stopping; this only reacts to the result.
+  Camera.onReady = (ok) => {
+    if (!ok) video?.classList.add('hidden');
     // Hide the flash control when the hardware or browser will not do torch.
     if (!ok || !Camera.hasTorch) $('#cam-flash')?.classList.add('hidden');
-  });
+  };
 
   on('#cam-flash', 'click', async () => {
     state.flash = !state.flash;
@@ -1217,7 +1315,7 @@ function wireCamera() {
     if (files.length) { Camera.stop(); addPages(files); }
   });
   on('#cam-shoot', 'click', async () => {
-    const blob = live ? await Camera.capture() : null;
+    const blob = Camera.isRunning ? await Camera.capture() : null;
     if (blob) { Camera.stop(); addPages([blob]); return; }
     // No live feed: hand off to the native camera instead.
     const files = await pickImages({ camera: true });
@@ -1307,10 +1405,13 @@ function wireMenu() {
 
 /** scrollIntoView resolves against the wrong box here and leaves the heading a
  *  chrome-height below the top, so the offset is computed against the list. */
-function scrollToSection(i) {
+function scrollToTarget(i) {
   const list = $('#dishes');
-  const target = $(`#sec-${i}`);
+  const tg = jumpTargets()[i];
+  const target = tg && document.getElementById(tg.id);
   if (!list || !target) return;
+  // scrollIntoView resolves against the wrong box here, so the offset is
+  // computed against the list itself.
   const delta = target.getBoundingClientRect().top - list.getBoundingClientRect().top;
   list.scrollTo({ top: list.scrollTop + delta, behavior: 'smooth' });
 }
@@ -1323,9 +1424,10 @@ function wireJumpSheet() {
     state.section = i;
     state.sectionTouched = true;
     state.sheet = null;
+    // render() removes the sheet synchronously, so the target is already in
+    // place; deferring to rAF only made the scroll miss frames.
     render();
-    // After the sheet is gone, so the scroll lands where it should.
-    requestAnimationFrame(() => scrollToSection(i));
+    scrollToTarget(i);
   });
 }
 
@@ -1414,14 +1516,7 @@ function wireFilterSheet() {
 function repaintDishes() {
   const list = $('#dishes');
   if (!list) return;
-  const sections = visibleSections();
-  const total = sections.reduce((n, s) => n + s.items.length, 0);
-  list.innerHTML = sections.map((s, i) => sectionBlock(s, i)).join('') +
-    (total === 0 ? `<div class="empty">${
-      state.searching && state.query.trim()
-        ? `Nothing on this menu matches "${esc(state.query)}".`
-        : 'Nothing on this menu matches those filters.'}</div>` : '') +
-    (total > 0 ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : '');
+  list.innerHTML = dishesHTML();
   list.scrollTop = 0;   // a changed result set reads from the top
   bindDishRows();
   sizeScrollTail();
@@ -1458,22 +1553,24 @@ function bindScrollSpy() {
   let ticking = false;
   const update = () => {
     ticking = false;
-    const heads = $$('.sec', list);
-    if (!heads.length) return;
+    const targets = jumpTargets()
+      .map((tg) => document.getElementById(tg.id))
+      .filter(Boolean);
+    if (!targets.length) return;
     const top = list.getBoundingClientRect().top;
     let current = 0;
-    for (let i = 0; i < heads.length; i++) {
-      if (heads[i].getBoundingClientRect().top - top <= 8) current = i;
+    for (let i = 0; i < targets.length; i++) {
+      if (targets[i].getBoundingClientRect().top - top <= 8) current = i;
     }
-    // Bottomed out: whatever is in view at the end is the last section.
-    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 4) current = heads.length - 1;
+    // Bottomed out: whatever is in view at the end is the last entry.
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 4) current = targets.length - 1;
     state.section = current;
     // Any scroll counts as having moved. Handled in place, never through
     // render(): re-rendering mid-gesture rebuilt the list and ate the scroll.
     if (list.scrollTop > 0) state.sectionTouched = true;
     if (state.sectionTouched) {
       const label = $('#jump-label');
-      const name = heads[current].querySelector('.sec-name')?.textContent;
+      const name = jumpTargets()[current]?.label;
       if (label && name && label.textContent !== name) label.textContent = name;
     }
   };
@@ -1609,6 +1706,13 @@ async function scanFromSharedURL(params) {
 // Registered at module scope, not inside boot(): boot awaits IndexedDB first,
 // by which time the load event has already fired and a listener added then would
 // never run. Errors surface in the console rather than being swallowed.
+// Backgrounding the app releases the camera too, and returning to the
+// viewfinder picks it up again.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) Camera.stop();
+  else syncCamera();
+});
+
 if ('serviceWorker' in navigator) {
   // updateViaCache:'none' stops the browser serving sw.js itself from the HTTP
   // cache, which GitHub Pages marks max-age=600 and which would otherwise delay

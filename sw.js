@@ -7,7 +7,7 @@
    arrived however hard the page was refreshed. Fonts and images are cache-first,
    since they only ever change alongside a code change. */
 
-const VERSION = 'dg-v8';
+const VERSION = 'dg-v9';
 
 const SHELL = [
   './',
