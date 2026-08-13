@@ -188,7 +188,7 @@ img { display: block; }
 .page-meta .lbl { font-size: 9px; letter-spacing: .24em; font-weight: 500; color: rgba(244,241,234,.6); padding-left: .24em; }
 .page-actions { flex: none; display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px; }
 .page-action { color: rgba(244,241,234,.65); font-size: 10px; letter-spacing: .2em; font-weight: 500;
-  text-transform: uppercase; padding: 4px 2px; padding-left: .2em; }
+  text-transform: uppercase; padding: 4px 2px 4px calc(2px + .2em); }
 .page-action:active { opacity: .6; }
 .page-action-sep { width: 1px; height: 11px; background: rgba(244,241,234,.28); }
 .review-foot { flex: none; padding: 16px 28px max(40px, calc(var(--safe-bottom) + 12px)); }
@@ -213,7 +213,10 @@ img { display: block; }
 .scanline { position: absolute; left: 0; right: 0; top: 0; height: 1.5px; background: var(--ink); opacity: .55;
   will-change: transform; animation: scanY 3.2s cubic-bezier(.45,0,.55,1) infinite; }
 .scan-label { font-size: 10.5px; letter-spacing: .3em; font-weight: 500; opacity: .6;
-  text-transform: uppercase; text-align: center; padding: 0 24px; padding-left: .3em;
+  text-transform: uppercase; text-align: center;
+  /* The gutter and the tracking compensation both apply: a bare padding-left
+     after the shorthand silently drops the 24px and shifts the text left. */
+  padding: 0 24px 0 calc(24px + .3em);
   transition: opacity .4s ease; min-height: 1.2em; }
 .scan-label.fading { opacity: 0; }
 .scan-error { text-align: center; padding: 0 44px; }
@@ -227,6 +230,8 @@ img { display: block; }
 .menu-bar { flex: none; display: flex; align-items: center; gap: 10px;
   padding: max(14px, calc(var(--safe-top) + 6px)) 20px 0; }
 .menu-bar > .circle-btn { flex: none; }
+.rest-name.untitled { font-family: var(--serif); font-size: 25px; font-weight: 500;
+  letter-spacing: 0; padding-left: 0; text-transform: none; }
 .rest-name { flex: 1; min-width: 0; text-align: center; font-weight: 500;
   line-height: 1.2; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
@@ -251,9 +256,7 @@ img { display: block; }
   border: 1px solid rgba(28,26,23,.28); display: flex; align-items: center; justify-content: center; }
 :root[data-theme="dark"] .filter-btn { border-color: rgba(242,239,231,.28); }
 .filter-btn.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-.filter-btn .dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--ink); border: 1.5px solid var(--paper); }
-.filter-btn.on .dot { background: var(--paper); border-color: var(--ink); }
+
 
 .search-row { flex: none; display: flex; align-items: center; gap: 11px; margin: 12px 20px 0;
   padding-bottom: 12px; border-bottom: 1px solid rgba(28,26,23,.24); }

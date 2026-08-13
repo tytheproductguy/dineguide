@@ -107,6 +107,8 @@ const state = {
   filters: { diets: new Set(Store.get('diets', [])), min: null, max: null },
   draft: null,
   sheet: null,          // 'jump' | 'filter'
+  // Until the reader moves, the control says what it does rather than where they are.
+  sectionTouched: false,
 };
 
 const LANGUAGES = ['English', 'Español', 'Français', 'Deutsch', 'Italiano'];
@@ -369,7 +371,8 @@ async function scanMenu(blobs, { signal } = {}) {
 
   menu.id = String(Date.now());
   menu.savedAt = Date.now();
-  menu.restaurantName = (menu.restaurantName || 'Scanned menu').toUpperCase();
+  // Left null when the menu shows no name, so the UI can fall back to the wordmark.
+  menu.restaurantName = menu.restaurantName ? menu.restaurantName.toUpperCase() : null;
   return menu;
 }
 
@@ -791,17 +794,19 @@ function viewMenu() {
     : `
       <div class="menu-tools">
         <button class="jump-btn" id="jump-open">
-          <span>Jump to section</span>${ICON.caret()}
+          <span id="jump-label">${esc(state.sectionTouched ? (sections[state.section]?.name ?? 'Jump to section') : 'Jump to section')}</span>${ICON.caret()}
         </button>
         ${canFilter ? `<button class="filter-btn ${filtersActive() ? 'on' : ''}" id="filter-open" aria-label="Filters">
-          ${ICON.funnel()}${filtersActive() ? '<i class="dot"></i>' : ''}
+          ${ICON.funnel()}
         </button>` : ''}
       </div>`;
 
   return `<div class="screen paper">
     <div class="menu-bar">
       <button class="circle-btn" id="menu-exit" aria-label="Scan a new menu">${ICON.close()}</button>
-      <div class="rest-name">${esc(m.restaurantName)}</div>
+      ${m.restaurantName
+        ? `<div class="rest-name">${esc(m.restaurantName)}</div>`
+        : '<div class="rest-name untitled">dineguide</div>'}
       <button class="circle-btn ${state.searching ? 'filled' : ''}" id="menu-search" aria-label="Search">
         ${ICON.search(state.searching ? 'var(--paper)' : 'currentColor')}</button>
     </div>
@@ -988,7 +993,7 @@ function viewHistory() {
       when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const count = m.sections.reduce((n, s) => n + s.items.length, 0);
     return `<button class="hist-row" data-open="${esc(m.id)}">
-      <div><div class="n">${esc(m.restaurantName)}</div><div class="m">${esc(meta)} · ${count} dishes</div></div>
+      <div><div class="n">${esc(m.restaurantName || `${m.language || 'Scanned'} menu`.toUpperCase())}</div><div class="m">${esc(meta)} · ${count} dishes</div></div>
       <div style="font-size:18px;opacity:.4">›</div>
     </button>`;
   }).join('') : `<div class="empty" style="padding-top:40px">Nothing scanned yet.</div>`;
@@ -1064,6 +1069,7 @@ async function startScan() {
     state.history = await History.all();
     state.menu = menu;
     state.section = 0;
+    state.sectionTouched = false;
     state.detailId = null;
     clearInterval(scanTimer);
     discardPagesQuietly();
@@ -1290,6 +1296,8 @@ function wireJumpSheet() {
   on('#jump-scrim', 'click', (e) => { if (e.target.id === 'jump-scrim') close(); });
   $$('[data-jump]').forEach((b) => b.onclick = () => {
     const i = Number(b.dataset.jump);
+    state.section = i;
+    state.sectionTouched = true;
     state.sheet = null;
     render();
     // After the sheet is gone, so the scroll lands where it should.
@@ -1424,9 +1432,18 @@ function bindScrollSpy() {
     // Bottomed out: whatever is in view at the end is the last section.
     if (list.scrollTop + list.clientHeight >= list.scrollHeight - 4) current = heads.length - 1;
     state.section = current;
+    if (state.sectionTouched) {
+      // Updated in place, never via render(): re-rendering would fight the scroll.
+      const label = $('#jump-label');
+      const name = heads[current].querySelector('.sec-name')?.textContent;
+      if (label && name && label.textContent !== name) label.textContent = name;
+    }
   };
 
   list.onscroll = () => {
+    // The first scroll counts as moving, so the label switches from the prompt
+    // to the section you are actually in.
+    if (!state.sectionTouched) { state.sectionTouched = true; render(); return; }
     if (ticking) return;
     ticking = true;
     requestAnimationFrame(update);
@@ -1473,7 +1490,8 @@ function wireHistory() {
     const m = state.history.find((x) => x.id === b.dataset.open);
     if (!m) return;
     m.sections.forEach((s, si) => s.items.forEach((it, ii) => { it._id = `${si}-${ii}`; }));
-    state.menu = m; state.section = 0; state.detailId = null; state.overlay = null;
+    state.menu = m; state.section = 0; state.sectionTouched = false;
+    state.detailId = null; state.overlay = null;
     go('menu');
   });
 }
