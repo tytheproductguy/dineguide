@@ -102,6 +102,7 @@ const state = {
   overlay: null,        // 'settings' | 'history' | 'confirm'
   history: [],
   pronSeen: Store.get('pronSeen', false),
+  diets: new Set(Store.get('diets', [])),
 };
 
 const LANGUAGES = ['English', 'Español', 'Français', 'Deutsch', 'Italiano'];
@@ -519,6 +520,8 @@ function fitRestaurantName() {
   const el = $('.rest-name');
   if (!el) return;
   const cs = getComputedStyle(el);
+  // The name is a flex child between the chrome buttons now, so its own box is
+  // already the space available.
   const avail = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   if (avail <= 0) return;
 
@@ -539,7 +542,7 @@ function fitRestaurantName() {
     widthAt(longest, size, track) <= avail;
 
   // Ordered from the design's own treatment down to a still-legible fallback.
-  const STEPS = [[21, .30], [19, .30], [17, .24], [16, .18], [15, .12], [13, .08]];
+  const STEPS = [[19, .30], [18, .26], [17, .22], [16, .18], [15, .12], [13, .08]];
 
   const apply = (i) => {
     el.style.setProperty('--rest-size', STEPS[i][0] + 'px');
@@ -708,13 +711,42 @@ function visibleDishes() {
     `${d.original} ${d.translated} ${d.ingredients} ${d.description}`.toLowerCase().includes(q));
 }
 
+/** Dishes for the continuous list, honouring search and diet filters. Returns
+ *  sections so the list can keep its own headings as separators. */
+function visibleSections() {
+  const m = state.menu;
+  if (!m) return [];
+  const q = state.searching ? state.query.trim().toLowerCase() : '';
+  const diets = state.diets;
+
+  return m.sections.map((s) => ({
+    ...s,
+    items: s.items.filter((d) => {
+      if (diets.has('veg') && !d.vegetarian) return false;
+      if (diets.has('gf') && !d.glutenFree) return false;
+      if (!q) return true;
+      return `${d.original} ${d.translated} ${d.ingredients} ${d.description}`.toLowerCase().includes(q);
+    }),
+  })).filter((s) => s.items.length > 0);
+}
+
+/** Diet filters are only offered for badges this menu actually carries. */
+function availableDiets() {
+  const all = state.menu ? state.menu.sections.flatMap((s) => s.items) : [];
+  return [
+    all.some((d) => d.glutenFree) && ['gf', 'GLUTEN FREE'],
+    all.some((d) => d.vegetarian) && ['veg', 'VEGETARIAN'],
+  ].filter(Boolean);
+}
+
 function viewMenu() {
   const m = state.menu;
   if (!m) return '';
-  const sec = m.sections[Math.min(state.section, m.sections.length - 1)];
-  const dishes = visibleDishes();
+  const sections = visibleSections();
+  const diets = availableDiets();
+  const total = sections.reduce((n, s) => n + s.items.length, 0);
 
-  const head = state.searching ? `
+  const tools = state.searching ? `
       <div class="search-row">
         ${ICON.search('rgba(28,26,23,.5)')}
         <input id="q" placeholder="Search dishes, ingredients…" value="${esc(state.query)}"
@@ -722,32 +754,45 @@ function viewMenu() {
         <button id="q-cancel" style="font-size:12px;font-weight:500;opacity:.6">Cancel</button>
       </div>`
     : `
-      <div class="tabs">
-        ${m.sections.map((s, i) => `<button class="tab ${i === state.section ? 'on' : ''}" data-sec="${i}">${esc(s.name)}<i></i></button>`).join('')}
-      </div>
-      <div class="explainer">
-        ${sec?.translation ? `<div class="t">"${esc(sec.translation)}"</div>` : ''}
-        ${sec?.note ? `<div class="s">${esc(sec.note)}</div>` : ''}
+      <div class="menu-tools">
+        <div class="sec-jump">
+          <select id="sec-jump" aria-label="Jump to section">
+            ${sections.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join('')}
+          </select>
+          <span class="sec-jump-label" id="sec-jump-label">${esc(sections[0]?.name ?? '')}</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </div>
+        ${diets.length ? `<div class="diet-chips">
+          ${diets.map(([k, label]) => `<button class="diet ${state.diets.has(k) ? 'on' : ''}" data-diet="${k}">${label}</button>`).join('')}
+        </div>` : ''}
       </div>`;
 
   return `<div class="screen paper">
-    <div class="menu-head">
-      <div class="menu-chrome">
-        <button class="circle-btn" id="menu-exit" aria-label="Scan a new menu">${ICON.close()}</button>
-        <div class="right">
-          <button class="circle-btn ${state.searching ? 'filled' : ''}" id="menu-search" aria-label="Search">
-            ${ICON.search(state.searching ? 'var(--paper)' : 'currentColor')}</button>
-          <button class="circle-btn" id="menu-settings" aria-label="Settings">${ICON.sliders()}</button>
-        </div>
-      </div>
+    <div class="menu-bar">
+      <button class="circle-btn" id="menu-exit" aria-label="Scan a new menu">${ICON.close()}</button>
       <div class="rest-name">${esc(m.restaurantName)}</div>
+      <div class="bar-right">
+        <button class="circle-btn ${state.searching ? 'filled' : ''}" id="menu-search" aria-label="Search">
+          ${ICON.search(state.searching ? 'var(--paper)' : 'currentColor')}</button>
+        <button class="circle-btn" id="menu-settings" aria-label="Settings">${ICON.sliders()}</button>
+      </div>
     </div>
-    ${head}
-    <div class="dishes">
-      ${dishes.map((d) => dishRow(d)).join('')}
-      ${dishes.length === 0 && state.searching
-        ? `<div class="empty">Nothing on this menu matches "${esc(state.query)}".</div>` : ''}
-      ${!state.searching ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : ''}
+    ${tools}
+    <div class="dishes" id="dishes">
+      ${sections.map((s, i) => `
+        <section class="sec" data-sec-index="${i}" id="sec-${i}">
+          <header class="sec-head">
+            <div class="sec-name">${esc(s.name)}</div>
+            ${s.translation ? `<div class="sec-trans">"${esc(s.translation)}"</div>` : ''}
+            ${s.note ? `<div class="sec-note">${esc(s.note)}</div>` : ''}
+          </header>
+          ${s.items.map((d) => dishRow(d)).join('')}
+        </section>`).join('')}
+      ${total === 0 ? `<div class="empty">${
+        state.searching && state.query.trim()
+          ? `Nothing on this menu matches "${esc(state.query)}".`
+          : 'Nothing on this menu matches that filter.'}</div>` : ''}
+      ${total > 0 ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : ''}
     </div>
     ${state.detailId ? viewDetail() : ''}
   </div>`;
@@ -1084,26 +1129,136 @@ function wireMenu() {
     $('#q')?.focus();
   });
   on('#q-cancel', 'click', () => { state.searching = false; state.query = ''; render(); });
+
   const q = $('#q');
   if (q) {
     q.addEventListener('input', () => {
       state.query = q.value;
       // Repaint only the list so the field keeps focus and the caret.
-      const list = $('.dishes');
-      const dishes = visibleDishes();
-      list.innerHTML = dishes.map((d) => dishRow(d)).join('') ||
-        `<div class="empty">Nothing on this menu matches "${esc(state.query)}".</div>`;
-      bindDishRows();
+      repaintDishes();
     });
     q.focus();
   }
-  $$('[data-sec]').forEach((b) => b.onclick = () => {
-    state.section = Number(b.dataset.sec); state.detailId = null; render();
+
+  // Diet filters. Rebuilt in place for the same reason: no focus or scroll loss.
+  $$('[data-diet]').forEach((b) => b.onclick = () => {
+    const k = b.dataset.diet;
+    if (state.diets.has(k)) state.diets.delete(k); else state.diets.add(k);
+    Store.set('diets', [...state.diets]);
+    b.classList.toggle('on', state.diets.has(k));
+    repaintDishes();
   });
+
+  // Jump to a section.
+  const jump = $('#sec-jump');
+  if (jump) {
+    jump.addEventListener('change', () => {
+      const target = $(`#sec-${jump.value}`);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   bindDishRows();
+  sizeScrollTail();
+  bindScrollSpy();
+
   on('#detail-scrim', 'click', () => {
     state.detailId = null; Store.set('pronSeen', true); render();
   });
+}
+
+/** Rebuild just the dish list, leaving the header, filters, and focus alone. */
+function repaintDishes() {
+  const list = $('#dishes');
+  if (!list) return;
+  const sections = visibleSections();
+  const total = sections.reduce((n, s) => n + s.items.length, 0);
+  list.innerHTML = sections.map((s, i) => `
+      <section class="sec" data-sec-index="${i}" id="sec-${i}">
+        <header class="sec-head">
+          <div class="sec-name">${esc(s.name)}</div>
+          ${s.translation ? `<div class="sec-trans">"${esc(s.translation)}"</div>` : ''}
+          ${s.note ? `<div class="sec-note">${esc(s.note)}</div>` : ''}
+        </header>
+        ${s.items.map((d) => dishRow(d)).join('')}
+      </section>`).join('') +
+    (total === 0 ? `<div class="empty">${
+      state.searching && state.query.trim()
+        ? `Nothing on this menu matches "${esc(state.query)}".`
+        : 'Nothing on this menu matches that filter.'}</div>` : '') +
+    (total > 0 ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : '');
+
+  // The section list changed, so the jump control has to follow.
+  const jump = $('#sec-jump');
+  if (jump) {
+    jump.innerHTML = sections.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join('');
+    setJumpLabel(sections[0]?.name ?? '');
+  }
+  bindDishRows();
+  sizeScrollTail();
+  bindScrollSpy();
+}
+
+/** Without room to scroll past it, the last section can never reach the top, so
+ *  jumping to it silently lands short and the spy never selects it. This adds
+ *  exactly enough tail room, and no more. */
+function sizeScrollTail() {
+  const list = $('#dishes');
+  if (!list) return;
+  let tail = $('.scroll-tail', list);
+  const sections = $$('.sec', list);
+  if (!sections.length) { tail?.remove(); return; }
+  if (!tail) {
+    tail = document.createElement('div');
+    tail.className = 'scroll-tail';
+    list.appendChild(tail);
+  } else {
+    list.appendChild(tail);   // keep it last after a repaint
+  }
+  tail.style.height = '0px';
+  const last = sections[sections.length - 1];
+  const trailing = list.scrollHeight - last.offsetTop;
+  const needed = Math.max(0, list.clientHeight - trailing - 24);
+  tail.style.height = needed + 'px';
+}
+
+function setJumpLabel(name) {
+  const el = $('#sec-jump-label');
+  if (el) el.textContent = name;
+}
+
+/** Keeps the header's section label in step with what is actually on screen.
+ *  Updates the label directly rather than re-rendering, which would fight the
+ *  scroll it is reacting to. */
+function bindScrollSpy() {
+  const list = $('#dishes');
+  const jump = $('#sec-jump');
+  if (!list || !jump) return;
+
+  let ticking = false;
+  const update = () => {
+    ticking = false;
+    const heads = $$('.sec', list);
+    if (!heads.length) return;
+    const top = list.getBoundingClientRect().top;
+    // The last section whose start has passed the top of the list is the one
+    // being read; fall back to the first before any have.
+    let current = 0;
+    for (let i = 0; i < heads.length; i++) {
+      if (heads[i].getBoundingClientRect().top - top <= 8) current = i;
+    }
+    // Bottomed out: whatever is in view at the end is the last section.
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 4) current = heads.length - 1;
+    if (String(current) !== jump.value) jump.value = String(current);
+    setJumpLabel(heads[current].querySelector('.sec-name').textContent);
+  };
+
+  list.onscroll = () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(update);
+  };
+  update();
 }
 
 function bindDishRows() {
