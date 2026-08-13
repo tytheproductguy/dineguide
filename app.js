@@ -1176,7 +1176,30 @@ function wireHistory() {
 // by which time the load event has already fired and a listener added then would
 // never run. Errors surface in the console rather than being swallowed.
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').catch((e) => {
-    console.warn('Service worker registration failed; the app will not work offline.', e);
+  // updateViaCache:'none' stops the browser serving sw.js itself from the HTTP
+  // cache, which GitHub Pages marks max-age=600 and which would otherwise delay
+  // every update by up to ten minutes.
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+    .then((reg) => {
+      reg.update().catch(() => {});
+      // Take over as soon as a new worker is ready, rather than waiting for
+      // every tab to close.
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        if (!sw) return;
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) sw.postMessage('skipWaiting');
+        });
+      });
+    })
+    .catch((e) => {
+      console.warn('Service worker registration failed; the app will not work offline.', e);
+    });
+
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloading) return;
+    reloading = true;
+    location.reload();
   });
 }

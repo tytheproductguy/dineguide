@@ -20,6 +20,22 @@
 </head>
 <body>
 <div id="app"></div>
+<script>
+// Escape hatch, inline and before app.js on purpose: if a stale cached bundle is
+// being served, the code in app.js is exactly what cannot be trusted to run.
+// Visiting ?fresh=1 tears down every worker and cache, then reloads clean.
+if (location.search.includes('fresh=1')) {
+  (async () => {
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch (e) {}
+    location.replace(location.pathname);
+  })();
+}
+</script>
 <script type="module" src="app.js"></script>
 </body>
 </html>
