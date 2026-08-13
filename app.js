@@ -102,7 +102,11 @@ const state = {
   overlay: null,        // 'settings' | 'history' | 'confirm'
   history: [],
   pronSeen: Store.get('pronSeen', false),
-  diets: new Set(Store.get('diets', [])),
+  // Applied filters. `draft` holds edits while the filter sheet is open, so
+  // Reset and Apply mean something.
+  filters: { diets: new Set(Store.get('diets', [])), min: null, max: null },
+  draft: null,
+  sheet: null,          // 'jump' | 'filter'
 };
 
 const LANGUAGES = ['English', 'Español', 'Français', 'Deutsch', 'Italiano'];
@@ -404,6 +408,10 @@ const ICON = {
   history: (c) => `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M3 12a9 9 0 1 0 3-6.7" fill="none" stroke="${c}" stroke-width="1.7" stroke-linecap="round"/>
     <path d="M3 3.5V8.5H8" fill="none" stroke="${c}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  caret: (c = 'currentColor') => `<svg class="caret" width="14" height="9" viewBox="0 0 14 9" aria-hidden="true">
+    <path d="M1 1.5 L7 7.5 L13 1.5" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  funnel: (c = 'currentColor') => `<svg width="17" height="15" viewBox="0 0 17 15" aria-hidden="true">
+    <path d="M1.5 2 H15.5 L10 8 V13 L7 14.2 V8 Z" fill="none" stroke="${c}" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
   speaker: (c) => `<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M3 9 V15 H7 L12 19 V5 L7 9 Z" fill="${c}"/>
     <path d="M15.5 8.5 a5 5 0 0 1 0 7" stroke="${c}" fill="none" stroke-width="1.7" stroke-linecap="round"/>
@@ -661,7 +669,11 @@ function viewReview() {
       <div style="display:flex;gap:6px">${state.pages.map((_, k) => `<div class="d ${k === i ? 'on' : ''}"></div>`).join('')}</div>
       <div class="lbl">PAGE ${i + 1} OF ${n}</div>
     </div>
-    <button class="retake" id="rev-retake">RETAKE PAGE ${i + 1}</button>
+    <div class="page-actions">
+      <button class="page-action" id="rev-retake">RETAKE PAGE ${i + 1}</button>
+      ${n > 1 ? `<span class="page-action-sep"></span>
+      <button class="page-action" id="rev-delete">DELETE PAGE ${i + 1}</button>` : ''}
+    </div>
     <div class="review-foot">
       <div class="note">Menus can be several pages. Add the next page before analyzing, and swipe to review each page.</div>
       <div class="review-actions">
@@ -711,19 +723,25 @@ function visibleDishes() {
     `${d.original} ${d.translated} ${d.ingredients} ${d.description}`.toLowerCase().includes(q));
 }
 
-/** Dishes for the continuous list, honouring search and diet filters. Returns
- *  sections so the list can keep its own headings as separators. */
+/** Dishes for the continuous list, honouring search and every active filter.
+ *  Returns sections so the list can keep its own headings as separators. */
 function visibleSections() {
   const m = state.menu;
   if (!m) return [];
   const q = state.searching ? state.query.trim().toLowerCase() : '';
-  const diets = state.diets;
+  const { diets, min, max } = state.filters;
 
   return m.sections.map((s) => ({
     ...s,
     items: s.items.filter((d) => {
       if (diets.has('veg') && !d.vegetarian) return false;
       if (diets.has('gf') && !d.glutenFree) return false;
+      // Dishes with no readable price are kept: hiding them would silently drop
+      // items the menu does list.
+      if (d.price != null) {
+        if (min != null && d.price < min) return false;
+        if (max != null && d.price > max) return false;
+      }
       if (!q) return true;
       return `${d.original} ${d.translated} ${d.ingredients} ${d.description}`.toLowerCase().includes(q);
     }),
@@ -734,17 +752,34 @@ function visibleSections() {
 function availableDiets() {
   const all = state.menu ? state.menu.sections.flatMap((s) => s.items) : [];
   return [
-    all.some((d) => d.glutenFree) && ['gf', 'GLUTEN FREE'],
-    all.some((d) => d.vegetarian) && ['veg', 'VEGETARIAN'],
+    all.some((d) => d.glutenFree) && ['gf', 'Gluten free'],
+    all.some((d) => d.vegetarian) && ['veg', 'Vegetarian'],
   ].filter(Boolean);
+}
+
+/** The menu's own price range, rounded outward, or null when it lists no prices. */
+function priceBounds() {
+  const prices = (state.menu ? state.menu.sections.flatMap((s) => s.items) : [])
+    .map((d) => d.price).filter((p) => p != null);
+  if (prices.length < 2) return null;
+  const lo = Math.floor(Math.min(...prices));
+  const hi = Math.ceil(Math.max(...prices));
+  return lo === hi ? null : { lo, hi };
+}
+
+function filtersActive() {
+  const b = priceBounds();
+  const { diets, min, max } = state.filters;
+  return diets.size > 0 ||
+    (b && ((min != null && min > b.lo) || (max != null && max < b.hi)));
 }
 
 function viewMenu() {
   const m = state.menu;
   if (!m) return '';
   const sections = visibleSections();
-  const diets = availableDiets();
   const total = sections.reduce((n, s) => n + s.items.length, 0);
+  const canFilter = availableDiets().length > 0 || !!priceBounds();
 
   const tools = state.searching ? `
       <div class="search-row">
@@ -755,46 +790,105 @@ function viewMenu() {
       </div>`
     : `
       <div class="menu-tools">
-        <div class="sec-jump">
-          <select id="sec-jump" aria-label="Jump to section">
-            ${sections.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join('')}
-          </select>
-          <span class="sec-jump-label" id="sec-jump-label">${esc(sections[0]?.name ?? '')}</span>
-          <span class="caret" aria-hidden="true">▾</span>
-        </div>
-        ${diets.length ? `<div class="diet-chips">
-          ${diets.map(([k, label]) => `<button class="diet ${state.diets.has(k) ? 'on' : ''}" data-diet="${k}">${label}</button>`).join('')}
-        </div>` : ''}
+        <button class="jump-btn" id="jump-open">
+          <span>Jump to section</span>${ICON.caret()}
+        </button>
+        ${canFilter ? `<button class="filter-btn ${filtersActive() ? 'on' : ''}" id="filter-open" aria-label="Filters">
+          ${ICON.funnel()}${filtersActive() ? '<i class="dot"></i>' : ''}
+        </button>` : ''}
       </div>`;
 
   return `<div class="screen paper">
     <div class="menu-bar">
       <button class="circle-btn" id="menu-exit" aria-label="Scan a new menu">${ICON.close()}</button>
       <div class="rest-name">${esc(m.restaurantName)}</div>
-      <div class="bar-right">
-        <button class="circle-btn ${state.searching ? 'filled' : ''}" id="menu-search" aria-label="Search">
-          ${ICON.search(state.searching ? 'var(--paper)' : 'currentColor')}</button>
-        <button class="circle-btn" id="menu-settings" aria-label="Settings">${ICON.sliders()}</button>
-      </div>
+      <button class="circle-btn ${state.searching ? 'filled' : ''}" id="menu-search" aria-label="Search">
+        ${ICON.search(state.searching ? 'var(--paper)' : 'currentColor')}</button>
     </div>
     ${tools}
     <div class="dishes" id="dishes">
-      ${sections.map((s, i) => `
-        <section class="sec" data-sec-index="${i}" id="sec-${i}">
-          <header class="sec-head">
-            <div class="sec-name">${esc(s.name)}</div>
-            ${s.translation ? `<div class="sec-trans">"${esc(s.translation)}"</div>` : ''}
-            ${s.note ? `<div class="sec-note">${esc(s.note)}</div>` : ''}
-          </header>
-          ${s.items.map((d) => dishRow(d)).join('')}
-        </section>`).join('')}
+      ${sections.map((s, i) => sectionBlock(s, i)).join('')}
       ${total === 0 ? `<div class="empty">${
         state.searching && state.query.trim()
           ? `Nothing on this menu matches "${esc(state.query)}".`
-          : 'Nothing on this menu matches that filter.'}</div>` : ''}
+          : 'Nothing on this menu matches those filters.'}</div>` : ''}
       ${total > 0 ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : ''}
     </div>
+    ${state.sheet === 'jump' ? viewJumpSheet(sections) : ''}
+    ${state.sheet === 'filter' ? viewFilterSheet() : ''}
     ${state.detailId ? viewDetail() : ''}
+  </div>`;
+}
+
+function sectionBlock(s, i) {
+  return `<section class="sec" data-sec-index="${i}" id="sec-${i}">
+      <header class="sec-head">
+        <div class="sec-name">${esc(s.name)}</div>
+        ${s.translation ? `<div class="sec-trans">"${esc(s.translation)}"</div>` : ''}
+        ${s.note ? `<div class="sec-note">${esc(s.note)}</div>` : ''}
+      </header>
+      ${s.items.map((d) => dishRow(d)).join('')}
+    </section>`;
+}
+
+/** Section list as the app's own sheet rather than the OS picker, so it matches
+ *  everything else. The section currently on screen is marked. */
+function viewJumpSheet(sections) {
+  return `<div class="sheet-scrim" id="jump-scrim">
+    <div class="sheet" role="dialog" aria-label="Jump to section">
+      <div class="grab"></div>
+      <div class="sheet-title">Jump to section</div>
+      <div class="sheet-list">
+        ${sections.map((s, i) => `
+          <button class="jump-row ${i === state.section ? 'on' : ''}" data-jump="${i}">
+            <span class="n">${esc(s.name)}</span>
+            <span class="c">${s.items.length}</span>
+          </button>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+function viewFilterSheet() {
+  const diets = availableDiets();
+  const b = priceBounds();
+  const d = state.draft;
+  const symbol = (() => {
+    const withCur = (state.menu.sections.flatMap((s) => s.items)).find((x) => x.currency);
+    return withCur ? symbolFor(withCur.currency) : '';
+  })();
+
+  return `<div class="sheet-scrim" id="filter-scrim">
+    <div class="sheet" role="dialog" aria-label="Filters">
+      <div class="grab"></div>
+      <div class="sheet-title">Filters</div>
+
+      ${diets.length ? `
+        <div class="filter-group">
+          <div class="group-label">DIETARY</div>
+          <div class="chips" style="margin-top:12px">
+            ${diets.map(([k, label]) => `<button class="chip ${d.diets.has(k) ? 'on' : ''}" data-ddiet="${k}">${label}</button>`).join('')}
+          </div>
+        </div>` : ''}
+
+      ${b ? `
+        <div class="filter-group">
+          <div class="group-label">PRICE</div>
+          <div class="price-value" id="price-value">${esc(symbol)}${d.min} – ${esc(symbol)}${d.max}</div>
+          <div class="range" id="range">
+            <div class="range-track"></div>
+            <div class="range-fill" id="range-fill"></div>
+            <input type="range" id="range-min" min="${b.lo}" max="${b.hi}" value="${d.min}" step="1" aria-label="Minimum price">
+            <input type="range" id="range-max" min="${b.lo}" max="${b.hi}" value="${d.max}" step="1" aria-label="Maximum price">
+          </div>
+          <div class="range-ends"><span>${esc(symbol)}${b.lo}</span><span>${esc(symbol)}${b.hi}</span></div>
+        </div>` : ''}
+
+      <div class="sheet-actions">
+        <button class="btn-outline" id="filter-reset" style="height:48px">RESET</button>
+        <button class="btn-primary" id="filter-apply" style="height:48px">APPLY</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -893,13 +987,10 @@ function viewHistory() {
     const meta = `${m.language || 'Menu'} · ${today ? 'Today' : when.toLocaleDateString()}, ` +
       when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const count = m.sections.reduce((n, s) => n + s.items.length, 0);
-    return `<div style="display:flex;align-items:center">
-      <button class="hist-row" data-open="${esc(m.id)}">
-        <div><div class="n">${esc(m.restaurantName)}</div><div class="m">${esc(meta)} · ${count} dishes</div></div>
-        <div style="font-size:18px;opacity:.4">›</div>
-      </button>
-      <button class="hist-del" data-del="${esc(m.id)}" aria-label="Delete">DELETE</button>
-    </div>`;
+    return `<button class="hist-row" data-open="${esc(m.id)}">
+      <div><div class="n">${esc(m.restaurantName)}</div><div class="m">${esc(meta)} · ${count} dishes</div></div>
+      <div style="font-size:18px;opacity:.4">›</div>
+    </button>`;
   }).join('') : `<div class="empty" style="padding-top:40px">Nothing scanned yet.</div>`;
 
   return `<div class="overlay">
@@ -960,7 +1051,7 @@ async function startScan() {
   clearInterval(scanTimer);
   scanTimer = setInterval(() => {
     if (state.screen !== 'scanning' || state.scanError) return;
-    if (state.scanStep < 6) { state.scanStep++; render(); }
+    if (state.scanStep < 6) { state.scanStep++; updateScanLabel(); }
   }, SCAN_STEP_MS);
 
   scanAbort = new AbortController();
@@ -983,6 +1074,22 @@ async function startScan() {
     state.scanError = e instanceof ScanError ? e.message : 'Something went wrong. Try again.';
     render();
   }
+}
+
+/** Swaps the status line in place with a cross-fade. Re-rendering the screen for
+ *  each step rebuilt the snapshot and restarted the scan-line animation, which is
+ *  what made the sequence flash. */
+function updateScanLabel() {
+  const el = $('.scan-label');
+  if (!el) return;
+  const step = SCAN_STEPS[Math.min(state.scanStep, 6)];
+  const next = typeof step === 'function' ? step() : step;
+  if (el.textContent === next) return;
+  el.classList.add('fading');
+  setTimeout(() => {
+    el.textContent = next;
+    el.classList.remove('fading');
+  }, 400);
 }
 
 function discardPagesQuietly() {
@@ -1106,9 +1213,17 @@ function wireReview() {
     else discardPages();
   });
   on('#rev-retake', 'click', () => {
+    // Drops this page and returns to the camera to shoot it again.
     const [gone] = state.pages.splice(state.reviewIndex, 1);
     if (gone) URL.revokeObjectURL(gone.url);
     state.reviewIndex = 0;
+    go('capture');
+  });
+  on('#rev-delete', 'click', () => {
+    // Drops this page and stays put, so the other pages are still there.
+    const [gone] = state.pages.splice(state.reviewIndex, 1);
+    if (gone) URL.revokeObjectURL(gone.url);
+    state.reviewIndex = Math.max(0, Math.min(state.reviewIndex, state.pages.length - 1));
     go(state.pages.length ? 'review' : 'capture');
   });
   on('#rev-add', 'click', () => go('capture'));
@@ -1123,7 +1238,6 @@ function wireScanning() {
 
 function wireMenu() {
   on('#menu-exit', 'click', () => { state.searching = false; state.query = ''; go('capture'); });
-  on('#menu-settings', 'click', openSettings);
   on('#menu-search', 'click', () => {
     state.searching = !state.searching; state.query = ''; render();
     $('#q')?.focus();
@@ -1132,38 +1246,124 @@ function wireMenu() {
 
   const q = $('#q');
   if (q) {
-    q.addEventListener('input', () => {
-      state.query = q.value;
-      // Repaint only the list so the field keeps focus and the caret.
-      repaintDishes();
-    });
+    q.addEventListener('input', () => { state.query = q.value; repaintDishes(); });
     q.focus();
   }
 
-  // Diet filters. Rebuilt in place for the same reason: no focus or scroll loss.
-  $$('[data-diet]').forEach((b) => b.onclick = () => {
-    const k = b.dataset.diet;
-    if (state.diets.has(k)) state.diets.delete(k); else state.diets.add(k);
-    Store.set('diets', [...state.diets]);
-    b.classList.toggle('on', state.diets.has(k));
-    repaintDishes();
+  on('#jump-open', 'click', () => { state.sheet = 'jump'; render(); });
+  on('#filter-open', 'click', () => {
+    // Edits go to a draft so Reset and Apply are meaningful.
+    const b = priceBounds();
+    state.draft = {
+      diets: new Set(state.filters.diets),
+      min: state.filters.min ?? (b ? b.lo : null),
+      max: state.filters.max ?? (b ? b.hi : null),
+    };
+    state.sheet = 'filter';
+    render();
   });
-
-  // Jump to a section.
-  const jump = $('#sec-jump');
-  if (jump) {
-    jump.addEventListener('change', () => {
-      const target = $(`#sec-${jump.value}`);
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  }
 
   bindDishRows();
   sizeScrollTail();
   bindScrollSpy();
 
+  if (state.sheet === 'jump') wireJumpSheet();
+  if (state.sheet === 'filter') wireFilterSheet();
+
   on('#detail-scrim', 'click', () => {
     state.detailId = null; Store.set('pronSeen', true); render();
+  });
+}
+
+/** scrollIntoView resolves against the wrong box here and leaves the heading a
+ *  chrome-height below the top, so the offset is computed against the list. */
+function scrollToSection(i) {
+  const list = $('#dishes');
+  const target = $(`#sec-${i}`);
+  if (!list || !target) return;
+  const delta = target.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  list.scrollTo({ top: list.scrollTop + delta, behavior: 'smooth' });
+}
+
+function wireJumpSheet() {
+  const close = () => { state.sheet = null; render(); };
+  on('#jump-scrim', 'click', (e) => { if (e.target.id === 'jump-scrim') close(); });
+  $$('[data-jump]').forEach((b) => b.onclick = () => {
+    const i = Number(b.dataset.jump);
+    state.sheet = null;
+    render();
+    // After the sheet is gone, so the scroll lands where it should.
+    requestAnimationFrame(() => scrollToSection(i));
+  });
+}
+
+function wireFilterSheet() {
+  const close = () => { state.sheet = null; state.draft = null; render(); };
+  on('#filter-scrim', 'click', (e) => { if (e.target.id === 'filter-scrim') close(); });
+
+  $$('[data-ddiet]').forEach((b) => b.onclick = () => {
+    const k = b.dataset.ddiet;
+    if (state.draft.diets.has(k)) state.draft.diets.delete(k); else state.draft.diets.add(k);
+    b.classList.toggle('on', state.draft.diets.has(k));
+  });
+
+  const b = priceBounds();
+  const lo = $('#range-min'), hi = $('#range-max');
+  if (b && lo && hi) {
+    const fill = $('#range-fill');
+    const label = $('#price-value');
+    const withCur = state.menu.sections.flatMap((s) => s.items).find((x) => x.currency);
+    const sym = withCur ? symbolFor(withCur.currency) : '';
+    const span = b.hi - b.lo;
+
+    const paint = () => {
+      const a = ((state.draft.min - b.lo) / span) * 100;
+      const z = ((state.draft.max - b.lo) / span) * 100;
+      fill.style.left = a + '%';
+      fill.style.right = (100 - z) + '%';
+      label.textContent = `${sym}${state.draft.min} – ${sym}${state.draft.max}`;
+    };
+
+    // With two stacked inputs, whichever is painted last wins the touch. Once the
+    // thumbs collapse onto the same value the other one becomes ungrabbable, so
+    // the nearer thumb is raised on every touch down.
+    const range = $('#range');
+    range.addEventListener('pointerdown', (e) => {
+      const r = range.getBoundingClientRect();
+      const at = b.lo + ((e.clientX - r.left) / r.width) * span;
+      const nearMin = Math.abs(at - state.draft.min) <= Math.abs(at - state.draft.max);
+      lo.style.zIndex = nearMin ? 2 : 1;
+      hi.style.zIndex = nearMin ? 1 : 2;
+    });
+
+    lo.addEventListener('input', () => {
+      // The thumbs must not cross.
+      state.draft.min = Math.min(Number(lo.value), state.draft.max);
+      lo.value = state.draft.min;
+      paint();
+    });
+    hi.addEventListener('input', () => {
+      state.draft.max = Math.max(Number(hi.value), state.draft.min);
+      hi.value = state.draft.max;
+      paint();
+    });
+    paint();
+  }
+
+  on('#filter-reset', 'click', () => {
+    state.draft.diets.clear();
+    if (b) { state.draft.min = b.lo; state.draft.max = b.hi; }
+    render();
+    wireFilterSheet();
+  });
+  on('#filter-apply', 'click', () => {
+    state.filters.diets = new Set(state.draft.diets);
+    state.filters.min = state.draft.min;
+    state.filters.max = state.draft.max;
+    Store.set('diets', [...state.filters.diets]);
+    state.sheet = null;
+    state.draft = null;
+    render();
   });
 }
 
@@ -1173,27 +1373,12 @@ function repaintDishes() {
   if (!list) return;
   const sections = visibleSections();
   const total = sections.reduce((n, s) => n + s.items.length, 0);
-  list.innerHTML = sections.map((s, i) => `
-      <section class="sec" data-sec-index="${i}" id="sec-${i}">
-        <header class="sec-head">
-          <div class="sec-name">${esc(s.name)}</div>
-          ${s.translation ? `<div class="sec-trans">"${esc(s.translation)}"</div>` : ''}
-          ${s.note ? `<div class="sec-note">${esc(s.note)}</div>` : ''}
-        </header>
-        ${s.items.map((d) => dishRow(d)).join('')}
-      </section>`).join('') +
+  list.innerHTML = sections.map((s, i) => sectionBlock(s, i)).join('') +
     (total === 0 ? `<div class="empty">${
       state.searching && state.query.trim()
         ? `Nothing on this menu matches "${esc(state.query)}".`
-        : 'Nothing on this menu matches that filter.'}</div>` : '') +
+        : 'Nothing on this menu matches those filters.'}</div>` : '') +
     (total > 0 ? '<div class="footnote">Translations and notes are generated, so double-check anything you are allergic to.</div>' : '');
-
-  // The section list changed, so the jump control has to follow.
-  const jump = $('#sec-jump');
-  if (jump) {
-    jump.innerHTML = sections.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join('');
-    setJumpLabel(sections[0]?.name ?? '');
-  }
   bindDishRows();
   sizeScrollTail();
   bindScrollSpy();
@@ -1211,29 +1396,20 @@ function sizeScrollTail() {
   if (!tail) {
     tail = document.createElement('div');
     tail.className = 'scroll-tail';
-    list.appendChild(tail);
-  } else {
-    list.appendChild(tail);   // keep it last after a repaint
   }
+  list.appendChild(tail);       // keep it last after a repaint
   tail.style.height = '0px';
   const last = sections[sections.length - 1];
-  const trailing = list.scrollHeight - last.offsetTop;
-  const needed = Math.max(0, list.clientHeight - trailing - 24);
-  tail.style.height = needed + 'px';
+  const lastTop = list.scrollTop + (last.getBoundingClientRect().top - list.getBoundingClientRect().top);
+  const trailing = list.scrollHeight - lastTop;
+  tail.style.height = Math.max(0, list.clientHeight - trailing) + 'px';
 }
 
-function setJumpLabel(name) {
-  const el = $('#sec-jump-label');
-  if (el) el.textContent = name;
-}
-
-/** Keeps the header's section label in step with what is actually on screen.
- *  Updates the label directly rather than re-rendering, which would fight the
- *  scroll it is reacting to. */
+/** Tracks which section is on screen so the jump sheet can mark it. Updates
+ *  state only, never re-renders: re-rendering would fight the scroll. */
 function bindScrollSpy() {
   const list = $('#dishes');
-  const jump = $('#sec-jump');
-  if (!list || !jump) return;
+  if (!list) return;
 
   let ticking = false;
   const update = () => {
@@ -1241,16 +1417,13 @@ function bindScrollSpy() {
     const heads = $$('.sec', list);
     if (!heads.length) return;
     const top = list.getBoundingClientRect().top;
-    // The last section whose start has passed the top of the list is the one
-    // being read; fall back to the first before any have.
     let current = 0;
     for (let i = 0; i < heads.length; i++) {
       if (heads[i].getBoundingClientRect().top - top <= 8) current = i;
     }
     // Bottomed out: whatever is in view at the end is the last section.
     if (list.scrollTop + list.clientHeight >= list.scrollHeight - 4) current = heads.length - 1;
-    if (String(current) !== jump.value) jump.value = String(current);
-    setJumpLabel(heads[current].querySelector('.sec-name').textContent);
+    state.section = current;
   };
 
   list.onscroll = () => {
@@ -1303,16 +1476,63 @@ function wireHistory() {
     state.menu = m; state.section = 0; state.detailId = null; state.overlay = null;
     go('menu');
   });
-  $$('[data-del]').forEach((b) => b.onclick = async () => {
-    await History.remove(b.dataset.del);
-    state.history = await History.all();
-    render();
-  });
 }
 
 // --------------------------------------------------------------------------
 // Boot
 // --------------------------------------------------------------------------
+
+/* ---------------------------------------------------------------------------
+   Opening straight into a scan from a shared Google Maps photo.
+
+   A Maps *photo* share link carries the image's own googleusercontent URL inside
+   it, and that host allows cross-origin fetches, so the photo can be pulled and
+   scanned directly. The short maps.app.goo.gl link cannot be resolved here (it
+   sends no CORS headers on its redirect), so the caller must pass either the
+   expanded Maps URL or the photo URL itself. An iOS Shortcut can do that
+   expansion; iOS has no Web Share Target, so a Shortcut is the way in.
+
+     ?photo=<encoded image url>
+     ?maps=<encoded expanded maps url>
+   --------------------------------------------------------------------------- */
+
+/** Pull the photo out of an expanded Maps URL and ask for a legible size. */
+function photoFromMapsURL(raw) {
+  let url;
+  try { url = decodeURIComponent(raw); } catch { url = raw; }
+  const m = url.match(/https:\/\/[a-z0-9-]+\.googleusercontent\.com\/[^!?\s"']+/i);
+  if (!m) return null;
+  // The share link embeds a thumbnail size; menu type needs far more than that.
+  return m[0].replace(/=[swh][^=]*$/, '') + '=w1600-h2133-k-no';
+}
+
+async function scanFromSharedURL(params) {
+  const direct = params.get('photo');
+  const maps = params.get('maps');
+  const src = direct ? decodeURIComponent(direct) : (maps ? photoFromMapsURL(maps) : null);
+  if (!src) return false;
+
+  // Clear the query so a reload does not scan the same photo again.
+  history.replaceState(null, '', location.pathname);
+
+  if (!Store.get('apiKey', '')) { state.screen = 'onboard'; state.obStep = 2; return false; }
+
+  try {
+    const res = await fetch(src, { mode: 'cors' });
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    if (!blob.type.startsWith('image/')) throw new Error('not an image');
+    state.pages = [{ blob, url: URL.createObjectURL(blob) }];
+    state.reviewIndex = 0;
+    render();
+    startScan();
+    return true;
+  } catch {
+    state.screen = 'capture';
+    render();
+    return false;
+  }
+}
 
 (async function boot() {
   state.history = await History.all();
@@ -1322,6 +1542,11 @@ function wireHistory() {
   if (new URLSearchParams(location.search).has('debug')) {
     window.DG = { state, render, addPages, startScan, cancelScan, openSettings, openHistory,
                   sanitize, History, go };
+  }
+
+  const params = new URLSearchParams(location.search);
+  if (params.has('photo') || params.has('maps')) {
+    if (await scanFromSharedURL(params)) return;
   }
 
   render();
