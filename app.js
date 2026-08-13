@@ -1086,6 +1086,7 @@ async function startScan() {
     state.menu = menu;
     state.section = 0;
     state.sectionTouched = false;
+    clearPriceFilter();
     state.detailId = null;
     clearInterval(scanTimer);
     discardPagesQuietly();
@@ -1112,6 +1113,13 @@ function updateScanLabel() {
     el.textContent = next;
     el.classList.remove('fading');
   }, 400);
+}
+
+/** Prices are specific to one menu: a range set at a trattoria is nonsense at
+ *  the next place. Dietary choices belong to the person, so they stay. */
+function clearPriceFilter() {
+  state.filters.min = null;
+  state.filters.max = null;
 }
 
 function discardPagesQuietly() {
@@ -1382,8 +1390,12 @@ function wireFilterSheet() {
   });
   on('#filter-apply', 'click', () => {
     state.filters.diets = new Set(state.draft.diets);
-    state.filters.min = state.draft.min;
-    state.filters.max = state.draft.max;
+    // Null unless the handles were actually moved off the ends. The draft opens
+    // at this menu's full range, so storing it verbatim would turn "gluten free"
+    // into a price constraint the reader never chose, which then carries to the
+    // next menu where those numbers mean something else entirely.
+    state.filters.min = (b && state.draft.min > b.lo) ? state.draft.min : null;
+    state.filters.max = (b && state.draft.max < b.hi) ? state.draft.max : null;
     Store.set('diets', [...state.filters.diets]);
     state.sheet = null;
     state.draft = null;
@@ -1514,6 +1526,7 @@ function wireHistory() {
     if (!m) return;
     m.sections.forEach((s, si) => s.items.forEach((it, ii) => { it._id = `${si}-${ii}`; }));
     state.menu = m; state.section = 0; state.sectionTouched = false;
+    clearPriceFilter();
     state.detailId = null; state.overlay = null;
     go('menu');
   });
