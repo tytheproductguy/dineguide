@@ -420,7 +420,13 @@ const Camera = {
     this.video = videoEl;
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 2048 } },
+        video: {
+          facingMode: { ideal: 'environment' },
+          // Menu type is small, so ask for as much detail as the device will give.
+          width: { ideal: 3840 }, height: { ideal: 2160 },
+          // Ignored where unsupported, but keeps the feed sharp where it is not.
+          advanced: [{ focusMode: 'continuous' }],
+        },
         audio: false,
       });
       videoEl.srcObject = this.stream;
@@ -617,7 +623,7 @@ function viewCamera() {
   };
   return `<div class="cam" id="cam">
     <video id="cam-video" playsinline muted autoplay></video>
-    <div class="scrim"></div>
+    <div class="cam-scrim"></div>
     <div class="wordmark">dineguide</div>
     <button class="cam-btn ${state.flash ? 'on' : ''}" id="cam-flash" style="left:20px" aria-label="Flash">
       ${ICON.bolt(state.flash ? '#1c1a17' : 'none', state.flash ? '#1c1a17' : cream)}
