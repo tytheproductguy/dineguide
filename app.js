@@ -1784,3 +1784,11 @@ if ('serviceWorker' in navigator) {
     location.reload();
   });
 }
+
+// --------------------------------------------------------------------------
+// Test surface
+// --------------------------------------------------------------------------
+// index.html loads this file as a module entry point and nothing imports it, so
+// these exports are inert in the browser. They exist so `test/` can drive the
+// real functions rather than a copy of them that can drift.
+export { sanitize, dishPasses, searchMatches, menuGroups, availableDiets, priceBounds, filtersActive, state };

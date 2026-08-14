@@ -19,7 +19,7 @@ strings into `#app` and re-wires listeners after each render.
 Before every push:
 
 1. **Bump `VERSION` in `sw.js`.** Stale clients keep the old shell otherwise.
-2. `node --check app.js` — the only automated gate that exists.
+2. `npm test` — syntax check plus the smoke suite. The only automated gate.
 
 After pushing, verify against the **commit hash**:
 
@@ -84,8 +84,23 @@ strangers spending it. Nothing has to stay running while travelling.
 
 ## Verifying without a phone
 
-`?debug=1` exposes `window.DG` (state, render, addPages, startScan, …) for
-driving the app with no camera and no scan. It exposes state only, never the key.
+`npm test` runs `tests/smoke.test.js` against the real functions in `app.js` —
+`sanitize()` and the filter grouping — with no browser involved. It covers the
+two things most likely to break quietly and hardest to eyeball, and it asserts
+the decisions in "Settled" above. **A red test is either a regression or a
+decision being reversed on purpose; if it is the latter, change the test in the
+same commit and say why.**
+
+It works because `tests/dom-stub.js` installs just enough browser for `app.js`
+to finish evaluating, and `app.js` ends with an export block that exists only
+for this. Both are load-bearing: the exports are inert in the browser (nothing
+imports `app.js`), so they look deletable and are not.
+
+What it does **not** cover: rendering, event wiring, the camera, a real scan, or
+the service worker. Those need a browser, and some of them need the live HTTPS
+origin. `?debug=1` exposes `window.DG` (state, render, addPages, startScan, …)
+for driving the app there with no camera and no scan. It exposes state only,
+never the key.
 
 - A sandbox has **no camera, no API key, and often no service worker**. Anything
   touching `getUserMedia`, a real scan, or SW caching must be stubbed, or

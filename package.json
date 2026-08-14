@@ -1,0 +1,8 @@
+{
+  "name": "dineguide",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --check app.js && node --test"
+  }
+}

@@ -35,7 +35,8 @@ with no browser chrome. Camera access needs HTTPS, which GitHub Pages provides.
 ## Local development
 
 ```bash
-python3 -m http.server 8080
+python3 -m http.server 8080   # serve it
+npm test                      # syntax check + smoke tests, no browser needed
 ```
 
 Append `?debug=1` to expose a `window.DG` handle for driving the app without a
