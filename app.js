@@ -518,9 +518,15 @@ function pickImages({ camera = false, multiple = false } = {}) {
 
 const app = document.getElementById('app');
 
-function render() {
+/** Theme and text size live on the root element, not in any view's markup, so
+ *  they can be applied on their own without rebuilding anything. */
+function applyDisplayPrefs() {
   document.documentElement.dataset.theme = state.dark ? 'dark' : 'light';
   document.documentElement.style.setProperty('--tscale', TEXT_SIZES[state.tsize]);
+}
+
+function render() {
+  applyDisplayPrefs();
 
   let html = '';
   switch (state.screen) {
@@ -1248,19 +1254,47 @@ async function openHistory() {
 
 function on(sel, ev, fn) { const el = $(sel); if (el) el.addEventListener(ev, fn); }
 
+/** Repaint one chip group's selection. Toggling a preference must not go
+ *  through render(): that rebuilds the whole drawer under the finger, replays
+ *  its entrance animation, throws away its scroll position, and on onboarding
+ *  resets the API key field to whatever was last committed to storage. */
+function markChips(sel, isOn) {
+  $$(sel).forEach((b) => b.classList.toggle('on', isOn(b)));
+}
+
+/** The one line on onboarding that restates the language and currency chips. */
+function syncPrefSummary() {
+  const el = $('.ob-summary');
+  if (el) el.textContent = `Menus in ${state.language} · prices in ${state.currency}`;
+}
+
 function wire() {
   // chips shared by onboarding and settings
   $$('[data-lang]').forEach((b) => b.onclick = () => {
-    state.language = b.dataset.lang; Store.set('language', state.language); render();
+    state.language = b.dataset.lang;
+    Store.set('language', state.language);
+    markChips('[data-lang]', (c) => c.dataset.lang === state.language);
+    syncPrefSummary();
   });
   $$('[data-cur]').forEach((b) => b.onclick = () => {
-    state.currency = b.dataset.cur; Store.set('currency', state.currency); render();
+    // Nothing showing prices is ever on screen behind these chips — settings
+    // opens over the camera — so the chips and the summary are the whole change.
+    state.currency = b.dataset.cur;
+    Store.set('currency', state.currency);
+    markChips('[data-cur]', (c) => c.dataset.cur === state.currency);
+    syncPrefSummary();
   });
   $$('[data-theme-set]').forEach((b) => b.onclick = () => {
-    state.dark = b.dataset.themeSet === 'dark'; Store.set('dark', state.dark); render();
+    state.dark = b.dataset.themeSet === 'dark';
+    Store.set('dark', state.dark);
+    applyDisplayPrefs();
+    markChips('[data-theme-set]', (c) => (c.dataset.themeSet === 'dark') === state.dark);
   });
   $$('[data-tsize]').forEach((b) => b.onclick = () => {
-    state.tsize = b.dataset.tsize; Store.set('tsize', state.tsize); render();
+    state.tsize = b.dataset.tsize;
+    Store.set('tsize', state.tsize);
+    applyDisplayPrefs();
+    markChips('[data-tsize]', (c) => c.dataset.tsize === state.tsize);
   });
 
   if (state.screen === 'onboard') wireOnboard();
@@ -1443,6 +1477,7 @@ function wireFilterSheet() {
 
   const b = priceBounds();
   const lo = $('#range-min'), hi = $('#range-max');
+  let paintRange = null;   // set below; RESET repaints the slider through it
   if (b && lo && hi) {
     const fill = $('#range-fill');
     const label = $('#price-value');
@@ -1481,14 +1516,22 @@ function wireFilterSheet() {
       hi.value = state.draft.max;
       paint();
     });
+    paintRange = paint;
     paint();
   }
 
   on('#filter-reset', 'click', () => {
+    // Same rule as the chips: reset edits the controls, it does not rebuild the
+    // sheet. render() here also re-ran wire(), which then bound this sheet a
+    // second time on top of the first.
     state.draft.diets.clear();
-    if (b) { state.draft.min = b.lo; state.draft.max = b.hi; }
-    render();
-    wireFilterSheet();
+    markChips('[data-ddiet]', () => false);
+    if (b) {
+      state.draft.min = b.lo;
+      state.draft.max = b.hi;
+      if (lo && hi) { lo.value = b.lo; hi.value = b.hi; }
+      paintRange?.();
+    }
   });
   on('#filter-apply', 'click', () => {
     state.filters.diets = new Set(state.draft.diets);
