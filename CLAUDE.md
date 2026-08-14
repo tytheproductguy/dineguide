@@ -21,15 +21,20 @@ Before every push:
 1. **Bump `VERSION` in `sw.js`.** Stale clients keep the old shell otherwise.
 2. `npm test` — syntax check plus the smoke suite. The only automated gate.
 
-After pushing, verify against the **commit hash**:
+After pushing, **verify against the deployed file, not the API**:
 
 ```bash
-gh api repos/tytheproductguy/dineguide/pages/builds/latest --jq '.commit,.status'
+curl -s "https://tytheproductguy.github.io/dineguide/sw.js?cb=$RANDOM" | grep VERSION
 ```
 
-`gh api .../pages` reports the *last completed* build and will happily tell you
-an old deploy succeeded. GitHub's CDN also holds files for ~10 minutes, so add a
-cache-buster when curling the live URL.
+The bumped `VERSION` is the per-deploy marker, which is half of why it gets
+bumped. The cache-buster is required — GitHub's CDN holds files for ~10 minutes.
+
+Do not trust the Pages API for this. Both `gh api .../pages` and
+`.../pages/builds/latest` report the last *completed* build and lag the live
+site badly: a deploy has been observed serving new bytes for over five minutes
+while `builds/latest` still named the previous commit. It is useful for
+confirming a build **failed**, and misleading for confirming one landed.
 
 `?fresh=1` tears down every service worker and cache, then reloads clean. It is
 inline in `index.html` *before* `app.js`, because a stale bundle is precisely
